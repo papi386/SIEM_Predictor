@@ -1,0 +1,30 @@
+import smtplib
+from email.mime.text import MIMEText
+
+def notify_email(subject, body, sender="your_email@example.com", 
+                 receiver="security_team@example.com",
+                 smtp_server="smtp.yourserver.com", password="YOUR_PASSWORD"):
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = receiver
+
+    try:
+        with smtplib.SMTP(smtp_server, 587) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.sendmail(sender, [receiver], msg.as_string())
+        print("[Notifier] Email notification sent")
+    except Exception as e:
+        print(f"[Notifier] Failed to send email: {e}")
+
+def notify_popup(message):
+    try:
+        from tkinter import Tk, messagebox
+        root = Tk()
+        root.withdraw()
+        messagebox.showwarning("Critical Offense", message)
+        root.destroy()
+        print("[Notifier] Popup displayed")
+    except Exception as e:
+        print(f"[Notifier] Popup failed: {e}")
