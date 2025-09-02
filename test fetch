@@ -1,0 +1,5 @@
+from SIEM.fetcher import get_offense_details
+
+def test_fetch_offense():
+    offense = get_offense_details("<OFFENSE_ID>")
+    assert offense is None or "id" in offense
