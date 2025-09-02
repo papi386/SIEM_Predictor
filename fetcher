@@ -1,0 +1,57 @@
+import time
+import requests
+from datetime import datetime, timedelta
+import urllib3
+from .config import QRADAR_HOST, API_TOKEN, API_VERSION, SEARCH_WINDOW_MINUTES
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def get_qradar_headers():
+    return {"SEC": API_TOKEN, "Version": API_VERSION, "Accept": "application/json"}
+
+def get_offense_details(offense_id):
+    url = f"{QRADAR_HOST}/api/siem/offenses/{offense_id}"
+    try:
+        resp = requests.get(url, headers=get_qradar_headers(), verify=False, timeout=60)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[Fetcher] Error fetching offense: {e}")
+        return None
+
+def run_aql_query(aql_query):
+    headers = get_qradar_headers()
+    search_endpoint = f"{QRADAR_HOST}/api/ariel/searches"
+    try:
+        response = requests.post(search_endpoint, headers=headers,
+                                 params={"query_expression": aql_query},
+                                 verify=False, timeout=60)
+        response.raise_for_status()
+        search_id = response.json().get("search_id")
+        if not search_id:
+            return None
+        status_endpoint = f"{search_endpoint}/{search_id}"
+        for _ in range(30):
+            time.sleep(2)
+            status_response = requests.get(status_endpoint, headers=headers, verify=False, timeout=60)
+            status_response.raise_for_status()
+            if status_response.json().get("status") == "COMPLETED":
+                results_response = requests.get(f"{status_endpoint}/results", headers=headers, verify=False, timeout=60)
+                results_response.raise_for_status()
+                return results_response.json()
+        return None
+    except Exception as e:
+        print(f"[Fetcher] Error AQL query: {e}")
+        return None
+
+def fetch_events(offense_ip, start_time_ms):
+    start_time = datetime.fromtimestamp(start_time_ms / 1000)
+    search_start = (start_time - timedelta(minutes=SEARCH_WINDOW_MINUTES / 2)).strftime("%Y-%m-%d %H:%M:%S")
+    search_end = (start_time + timedelta(minutes=SEARCH_WINDOW_MINUTES / 2)).strftime("%Y-%m-%d %H:%M:%S")
+
+    aql = f"""
+        SELECT UTF8(payload) as payload_text FROM events
+        WHERE sourceip='{offense_ip}' OR destinationip='{offense_ip}'
+        START '{search_start}' STOP '{search_end}'
+    """
+    return run_aql_query(aql)
