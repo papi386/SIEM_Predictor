@@ -1,0 +1,7 @@
+QRADAR_HOST = "https://<YOUR_QRADAR_HOST>"
+API_TOKEN = "<YOUR_TOKEN>"
+API_VERSION = "16.0"
+SEARCH_WINDOW_MINUTES = 10
+
+MODEL_PATH = "model/random_forest.pkl"
+PIPELINE_PATH = "model/pipeline.pkl"
