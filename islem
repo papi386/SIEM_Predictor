@@ -1,0 +1,129 @@
+"""
+import requests
+import time
+import sys
+from datetime import datetime, timedelta
+import ipaddress
+
+QRADAR_HOST = 'https://172.19.11.202'
+API_TOKEN = 'PUT YOUR TOKEN  '
+API_VERSION = '16.0'
+OFFENSE_ID_CIBLE = PUT YOUR OFFENSE ID 
+SEARCH_WINDOW_MINUTES = 10
+
+def get_qradar_headers():
+    return {'SEC': API_TOKEN, 'Version': API_VERSION, 'Accept': 'application/json'}
+
+def get_offense_details(offense_id):
+    print(f"Récupération des détails pour l'offense #{offense_id}...")
+    url = f"{QRADAR_HOST}/api/siem/offenses/{offense_id}"
+    headers = get_qradar_headers()
+    try:
+        response = requests.get(url, headers=headers, verify=False, timeout=60)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            print(f"Erreur : Offense #{offense_id} introuvable.")
+        else:
+            print(f"Erreur HTTP : {e}")
+        return None
+    except Exception as e:
+        print(f"Erreur lors de la récupération de l'offense: {e}")
+        return None
+
+def run_aql_query(aql_query):
+    headers = get_qradar_headers()
+    search_endpoint = f"{QRADAR_HOST}/api/ariel/searches"
+    try:
+        response = requests.post(search_endpoint, headers=headers, params={'query_expression': aql_query}, verify=False, timeout=60)
+        response.raise_for_status()
+        search_id = response.json().get('search_id')
+        if not search_id:
+            return None
+        status_endpoint = f"{search_endpoint}/{search_id}"
+        for _ in range(30):
+            time.sleep(2)
+            status_response = requests.get(status_endpoint, headers=headers, verify=False, timeout=60)
+            status_response.raise_for_status()
+            if status_response.json().get('status') == "COMPLETED":
+                results_response = requests.get(f"{status_endpoint}/results", headers=headers, verify=False, timeout=60)
+                results_response.raise_for_status()
+                return results_response.json()
+        print("Timeout de la recherche AQL.")
+        return None
+    except requests.exceptions.RequestException:
+        return None
+
+if __name__ == "__main__":
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except:
+        pass
+
+    offense = get_offense_details(OFFENSE_ID_CIBLE)
+    if not offense:
+        print("Fin du script.")
+        sys.exit(0)
+
+    description = offense.get('description', 'N/A').strip()
+    start_time_ms = offense.get('start_time')
+    offense_source_ip = offense.get('offense_source')
+
+    print("\n" + "="*80)
+    print(f"Investigation Offense #{OFFENSE_ID_CIBLE}: {description[:80]}")
+    print("="*80)
+
+    if not (offense_source_ip and start_time_ms):
+        print("IP source ou heure de début manquante pour cette offense.")
+        sys.exit(0)
+
+    try:
+        ipaddress.ip_address(offense_source_ip)
+    except ValueError:
+        print(f"La source '{offense_source_ip}' n'est pas une IP valide.")
+        sys.exit(0)
+
+    print(f"IP principale de l'offense: {offense_source_ip}")
+
+    start_time = datetime.fromtimestamp(start_time_ms / 1000)
+    search_start = (start_time - timedelta(minutes=SEARCH_WINDOW_MINUTES / 2)).strftime('%Y-%m-%d %H:%M:%S')
+    search_end = (start_time + timedelta(minutes=SEARCH_WINDOW_MINUTES / 2)).strftime('%Y-%m-%d %H:%M:%S')
+
+    found_any_data = False
+
+    print(f"\n--- Recherche des événements entre {search_start} et {search_end} ---")
+    aql_events = (f"SELECT UTF8(payload) as payload_text FROM events "
+                  f"WHERE sourceip='{offense_source_ip}' OR destinationip='{offense_source_ip}' "
+                  f"START '{search_start}' STOP '{search_end}'")
+    event_results = run_aql_query(aql_events)
+
+    if event_results and 'events' in event_results and event_results['events']:
+        found_any_data = True
+        print("Événements trouvés :")
+        for i, event in enumerate(event_results['events']):
+            print(f"\n[ Event #{i+1} ]:\n{event.get('payload_text', 'N/A').strip()}")
+
+    print(f"\n--- Recherche des flux entre {search_start} et {search_end} ---")
+    aql_flows = (f"SELECT APPLICATIONNAME(applicationid) as app, sourceip, destinationip, sourceport, destinationport "
+                 f"FROM flows WHERE sourceip='{offense_source_ip}' OR destinationip='{offense_source_ip}' "
+                 f"START '{search_start}' STOP '{search_end}'")
+    flow_results = run_aql_query(aql_flows)
+
+    if flow_results and 'flows' in flow_results and flow_results['flows']:
+        found_any_data = True
+        print("Flux trouvés :")
+        for flow in flow_results['flows']:
+            app = flow.get('app', 'N/A')
+            src_ip = flow.get('sourceip', 'N/A')
+            dst_ip = flow.get('destinationip', 'N/A')
+            ports = f"{flow.get('sourceport', 'N/A')}->{flow.get('destinationport', 'N/A')}"
+            print(f"- {app}: {src_ip} -> {dst_ip} (Ports: {ports})")
+
+    if not found_any_data:
+        print("\nAucune donnée trouvée pour cette IP dans cette fenêtre.")
+
+    print("\n" + "="*80)
+    print("Investigation terminée.")
+    print("="*80)""""
