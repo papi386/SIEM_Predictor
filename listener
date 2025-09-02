@@ -1,0 +1,43 @@
+import ipaddress
+from .fetcher import get_offense_details, fetch_events
+from .notifier import notify_email, notify_popup
+from pipeline.pipeline import apply_pipeline
+from model.save_load import load_model
+from .config import MODEL_PATH, PIPELINE_PATH
+
+clf = load_model(MODEL_PATH)
+vectorizer = load_model(PIPELINE_PATH)
+
+def process_offense(offense_id):
+    offense = get_offense_details(offense_id)
+    if not offense:
+        return
+
+    description = offense.get("description", "N/A").strip()
+    start_time_ms = offense.get("start_time")
+    offense_ip = offense.get("offense_source")
+
+    if not offense_ip or not start_time_ms:
+        return
+
+    try:
+        ipaddress.ip_address(offense_ip)
+    except ValueError:
+        print("[Listener] Invalid offense IP")
+        return
+
+    results = fetch_events(offense_ip, start_time_ms)
+    if results and "events" in results:
+        for ev in results["events"]:
+            payload = ev.get("payload_text", "").strip()
+            if payload:
+                predict_and_notify(payload)
+
+def predict_and_notify(payload_text):
+    X = apply_pipeline([payload_text], vectorizer)
+    y_pred = clf.predict(X)[0]
+
+    print(f"[Listener] Prediction: {y_pred}")
+    if y_pred == "critical":
+        notify_email("Critical offense detected!", payload_text)
+        notify_popup(payload_text)
