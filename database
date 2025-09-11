@@ -1,0 +1,164 @@
+import requests
+import time
+import sys
+import ipaddress
+import sqlite3
+from datetime import datetime, timedelta
+
+# ==============================
+# CONFIG
+# ==============================
+QRADAR_HOST = "https://172.19.11.202"
+API_TOKEN = "PUT_YOUR_TOKEN"
+API_VERSION = "16.0"
+OFFENSE_ID_CIBLE = PUT_YOUR_OFFENSE_ID
+SEARCH_WINDOW_MINUTES = 10
+POLL_INTERVAL = 60  # seconds between refresh
+
+# ==============================
+# QRadar Helpers
+# ==============================
+def get_qradar_headers():
+    return {"SEC": API_TOKEN, "Version": API_VERSION, "Accept": "application/json"}
+
+def get_offense_details(offense_id):
+    url = f"{QRADAR_HOST}/api/siem/offenses/{offense_id}"
+    try:
+        r = requests.get(url, headers=get_qradar_headers(), verify=False, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[!] Could not fetch offense {offense_id}: {e}")
+        return None
+
+def run_aql_query(aql_query):
+    headers = get_qradar_headers()
+    search_endpoint = f"{QRADAR_HOST}/api/ariel/searches"
+    try:
+        r = requests.post(search_endpoint, headers=headers, params={"query_expression": aql_query}, verify=False, timeout=60)
+        r.raise_for_status()
+        search_id = r.json().get("search_id")
+        if not search_id:
+            return None
+
+        status_endpoint = f"{search_endpoint}/{search_id}"
+        for _ in range(30):
+            time.sleep(2)
+            status_r = requests.get(status_endpoint, headers=headers, verify=False, timeout=60)
+            status_r.raise_for_status()
+            if status_r.json().get("status") == "COMPLETED":
+                results_r = requests.get(f"{status_endpoint}/results", headers=headers, verify=False, timeout=60)
+                results_r.raise_for_status()
+                return results_r.json()
+        return None
+    except Exception as e:
+        print(f"[!] AQL query failed: {e}")
+        return None
+
+# ==============================
+# Database Setup
+# ==============================
+def init_db():
+    conn = sqlite3.connect("qradar_data.db")
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        offense_id INTEGER,
+        timestamp TEXT,
+        payload_text TEXT,
+        src_ip TEXT,
+        dst_ip TEXT,
+        srccountry TEXT
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS flows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        offense_id INTEGER,
+        timestamp TEXT,
+        app TEXT,
+        src_ip TEXT,
+        dst_ip TEXT,
+        src_port TEXT,
+        dst_port TEXT
+    )""")
+    conn.commit()
+    return conn
+
+def insert_event(conn, offense_id, event):
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO events(offense_id, timestamp, payload_text, src_ip, dst_ip, srccountry)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (offense_id,
+                 datetime.utcnow().isoformat(),
+                 event.get("payload_text", ""),
+                 event.get("sourceip", ""),
+                 event.get("destinationip", ""),
+                 event.get("srccountry", "")))
+    conn.commit()
+
+def insert_flow(conn, offense_id, flow):
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO flows(offense_id, timestamp, app, src_ip, dst_ip, src_port, dst_port)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (offense_id,
+                 datetime.utcnow().isoformat(),
+                 flow.get("app", ""),
+                 flow.get("sourceip", ""),
+                 flow.get("destinationip", ""),
+                 flow.get("sourceport", ""),
+                 flow.get("destinationport", "")))
+    conn.commit()
+
+# ==============================
+# Main Loop
+# ==============================
+if __name__ == "__main__":
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    conn = init_db()
+
+    offense = get_offense_details(OFFENSE_ID_CIBLE)
+    if not offense:
+        print("No offense found. Exiting.")
+        sys.exit(0)
+
+    description = offense.get("description", "N/A").strip()
+    start_time_ms = offense.get("start_time")
+    offense_source_ip = offense.get("offense_source")
+
+    if not (offense_source_ip and start_time_ms):
+        print("[!] Missing offense details.")
+        sys.exit(0)
+
+    start_time = datetime.fromtimestamp(start_time_ms / 1000)
+
+    print("=" * 80)
+    print(f"[Monitoring] Offense #{OFFENSE_ID_CIBLE}: {description}")
+    print("=" * 80)
+
+    while True:
+        search_start = (datetime.utcnow() - timedelta(minutes=SEARCH_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        search_end = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Fetch events
+        aql_events = (f"SELECT UTF8(payload) as payload_text, sourceip, destinationip, srccountry "
+                      f"FROM events WHERE sourceip='{offense_source_ip}' OR destinationip='{offense_source_ip}' "
+                      f"START '{search_start}' STOP '{search_end}'")
+        event_results = run_aql_query(aql_events)
+        if event_results and "events" in event_results and event_results["events"]:
+            for ev in event_results["events"]:
+                insert_event(conn, OFFENSE_ID_CIBLE, ev)
+            print(f"[+] Inserted {len(event_results['events'])} new events into DB.")
+
+        # Fetch flows
+        aql_flows = (f"SELECT APPLICATIONNAME(applicationid) as app, sourceip, destinationip, sourceport, destinationport "
+                     f"FROM flows WHERE sourceip='{offense_source_ip}' OR destinationip='{offense_source_ip}' "
+                     f"START '{search_start}' STOP '{search_end}'")
+        flow_results = run_aql_query(aql_flows)
+        if flow_results and "flows" in flow_results and flow_results["flows"]:
+            for fl in flow_results["flows"]:
+                insert_flow(conn, OFFENSE_ID_CIBLE, fl)
+            print(f"[+] Inserted {len(flow_results['flows'])} new flows into DB.")
+
+        print(f"Sleeping {POLL_INTERVAL}s...\n")
+        time.sleep(POLL_INTERVAL)
