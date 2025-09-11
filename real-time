@@ -1,0 +1,80 @@
+import requests
+import time
+from datetime import datetime, timedelta
+
+# ==============================
+# CONFIG
+# ==============================
+QRADAR_HOST = 'https://172.19.11.202'
+API_TOKEN = 'PUT_YOUR_TOKEN'
+API_VERSION = '16.0'
+TIME_WINDOW_HOURS = 3   # offenses in last 3 hours
+
+def get_qradar_headers():
+    return {
+        'SEC': API_TOKEN,
+        'Version': API_VERSION,
+        'Accept': 'application/json'
+    }
+
+def get_recent_offenses(since_datetime):
+    """
+    Récupère les offenses créées depuis `since_datetime`
+    """
+    url = f"{QRADAR_HOST}/api/siem/offenses"
+    headers = get_qradar_headers()
+
+    # QRadar stocke les timestamps en millisecondes
+    since_epoch_ms = int(since_datetime.timestamp() * 1000)
+
+    params = {
+        'filter': f"start_time>{since_epoch_ms}",
+        'fields': 'id,description,start_time,offense_source,severity,status'
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=False, timeout=60)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"[!] Erreur lors de la récupération des offenses : {e}")
+        return []
+
+def format_offense(offense):
+    """Affichage lisible d’une offense"""
+    offense_id = offense.get('id')
+    desc = offense.get('description', 'N/A')
+    src = offense.get('offense_source', 'N/A')
+    sev = offense.get('severity', 'N/A')
+    status = offense.get('status', 'N/A')
+
+    ts = offense.get('start_time', 0)
+    ts_str = datetime.fromtimestamp(ts / 1000).strftime('%Y-%m-%d %H:%M:%S') if ts else 'N/A'
+
+    return (f"\n[Offense #{offense_id}] {desc}\n"
+            f" - Source: {src}\n"
+            f" - Severity: {sev}\n"
+            f" - Status: {status}\n"
+            f" - Start: {ts_str}")
+
+if __name__ == "__main__":
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except:
+        pass
+
+    print("=" * 80)
+    print("🔎 Surveillance des offenses QRadar (fenêtre = dernières 3 heures)")
+    print("=" * 80)
+
+    # Fenêtre de 3h
+    since_time = datetime.now() - timedelta(hours=TIME_WINDOW_HOURS)
+
+    offenses = get_recent_offenses(since_time)
+    if not offenses:
+        print("Aucune offense récente trouvée.")
+    else:
+        print(f"{len(offenses)} offense(s) trouvée(s) dans les dernières {TIME_WINDOW_HOURS} heures.")
+        for off in offenses:
+            print(format_offense(off))
