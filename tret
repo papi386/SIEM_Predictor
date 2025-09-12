@@ -1,0 +1,149 @@
+import json
+import ipaddress
+import math
+import tldextract
+import requests
+from datetime import datetime
+import pandas as pd
+
+# Load malicious domain list from CSV
+bad_domains_df = pd.read_csv("../src/blocklist_domain.csv")
+BAD_DOMAINS = set(bad_domains_df.iloc[:, 0].str.lower().str.strip())  # first column, lowercase
+
+
+# Shannon entropy calculation
+def shannon_entropy(s):
+    probabilities = [float(s.count(c)) / len(s) for c in set(s)]
+    return -sum(p * math.log2(p) for p in probabilities)
+
+
+# Country lookup from IP
+def ip_to_country(ip):
+    try:
+        resp = requests.get(f"https://ipapi.co/{ip}/country/", timeout=2)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except:
+        pass
+    return "??"
+
+
+# Load MISP events
+with open("../data/events_4.json", "r") as f:
+    events = json.load(f)
+
+import numpy as np
+
+dataset = []
+i = 0
+for e in events:
+    print(i)
+    event = e["Event"]
+    attrs = event.get("Attribute", [])
+
+    # 🔹 Map threat_level_id to keep only {1,2,3,4}, else NaN
+    threat_level = event.get("threat_level_id", None)
+    if threat_level not in ["1", "2", "3", "4"]:
+        threat_level = np.nan
+
+    # Initialize feature counts
+    num_domains = 0
+    num_ips = 0
+    num_sha256 = 0
+    num_urls = 0
+
+    # Binary indicators
+    has_malware_hash = 0
+    has_multiple_ip_ranges = 0
+    has_known_bad_domain = 0
+    num_known_bad_domains = 0
+
+    # Diversity metrics
+    ip_countries = set()
+    domains_seen = set()
+    domain_entropies = []
+    url_lengths = []
+
+    ip_networks = set()
+
+    for attr in attrs:
+        atype = attr["type"]
+        aval = attr["value"]
+
+        # Count domains
+        if atype in ["domain", "hostname", "domain|ip"]:
+            num_domains += 1
+            ext = tldextract.extract(aval)
+            domain = f"{ext.domain}.{ext.suffix}".lower()
+            domains_seen.add(domain)
+            domain_entropies.append(shannon_entropy(domain))
+
+            # Check against bad domain list
+            if domain in BAD_DOMAINS:
+                has_known_bad_domain = 1
+                num_known_bad_domains += 1
+
+        # Count IPs
+        if atype in ["ip-src", "ip-dst", "ip-src|port", "ip-dst|port"]:
+            num_ips += 1
+            try:
+                ip = aval.split("|")[0]
+                ip_countries.add(ip_to_country(ip))
+                net = ipaddress.ip_network(ip + "/24", strict=False)
+                ip_networks.add(net)
+            except:
+                pass
+
+        # Hashes
+        if atype == "sha256":
+            num_sha256 += 1
+            has_malware_hash = 1
+
+        if atype in ["url", "uri", "link"]:
+            num_urls += 1
+            url_lengths.append(len(aval))
+
+        if atype in ["md5", "sha1"]:
+            has_malware_hash = 1
+
+    # Multiple IP ranges
+    if len(ip_networks) > 1:
+        has_multiple_ip_ranges = 1
+
+    # Diversity metrics
+    unique_ip_countries = len(ip_countries)
+    avg_domain_entropy = sum(domain_entropies) / len(domain_entropies) if domain_entropies else 0
+    avg_length_of_urls = sum(url_lengths) / len(url_lengths) if url_lengths else 0
+
+    dataset.append({
+        "event_id": event["id"],
+        "event_info": event["info"],
+        "date": event["date"],
+        "threat_level_id": threat_level,   # ✅ mapped value
+
+        # Counts
+        "num_domains": num_domains,
+        "num_ips": num_ips,
+        "num_sha256": num_sha256,
+        "num_urls": num_urls,
+
+        # Binary
+        "has_malware_hash": has_malware_hash,
+        "has_multiple_ip_ranges": has_multiple_ip_ranges,
+        "has_known_bad_domain": has_known_bad_domain,
+
+        # Bad domain count
+        "num_known_bad_domains": num_known_bad_domains,
+
+        # Diversity
+        "unique_ip_countries": unique_ip_countries,
+        "avg_domain_entropy": avg_domain_entropy,
+        "avg_length_of_urls": avg_length_of_urls
+    })
+    i += 1
+
+# Save to CSV (dropping undefined threat levels)
+df = pd.DataFrame(dataset)
+df = df.dropna(subset=["threat_level_id"])   # ✅ remove NaN rows
+df.to_csv("misp_event_features_4.csv", index=False)
+print(f"Extracted features for {len(df)} events and saved to misp_event_features_1.csv")
