@@ -1,0 +1,36 @@
+import configparser
+import requests
+from datetime import datetime, timedelta
+
+# Read config
+config = configparser.ConfigParser()
+config.read("../config.ini")
+IP = config.get("SIEM", "IP")
+KEY = config.get("SIEM", "Key")
+
+BASE_URL = f"https://{IP}/api/siem/offenses"
+
+# Headers with API token
+headers = {
+    'SEC': KEY,
+    'Version': '16.0',  # recommended to specify API version
+    'Accept': 'application/json'
+}
+
+# Calculate timestamp for 3 hours ago (UTC) in milliseconds
+three_hours_ago = int((datetime.utcnow() - timedelta(hours=3)).timestamp() * 1000)
+
+# Add filter to only fetch offenses from last 3 hours
+params = {
+    "filter": f"start_time >= {three_hours_ago}"
+}
+
+# Fetch data
+response = requests.get(BASE_URL, headers=headers, params=params, verify=False)
+
+if response.status_code == 200:
+    json_data = response.json()
+    for offense in json_data:
+        print(f"Status is {offense['status']} for offense {offense['description']}")
+else:
+    print("Error fetching data:", response.status_code, response.text)
