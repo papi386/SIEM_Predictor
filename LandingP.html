@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="LandingP.css">
+    <script src="LandingP.js"></script>
+
+
+<title>Tailor IBM QRadar — Demo Dashboard</title>
+
+
+</head>
+<body>
+<header>
+  <div class="logo">VC</div>
+  <div>
+    <div class="title">Tailor IBM QRadar for Your Needs | Vectra Corp.</div>
+    <div style="color:var(--muted);font-size:13px;margin-top:4px">SOC Analyst Overview • Live demo</div>
+  </div>
+
+  <div class="top-actions">
+    <button class="btn">Share</button>
+    <button class="btn">Save</button>
+    <button class="btn primary">Visit</button>
+  </div>
+</header>
+
+<!-- Critical Offences Section -->
+<section class="card" style="margin-top:20px">
+  <div class="chart-title">Critical Offences</div>
+  <div class="list" id="offenceList">
+    <!-- Offences will appear here dynamically -->
+  </div>
+</section>
+
+<script>
+(function(){
+  const offenceList = document.getElementById('offenceList');
+
+  const offences = [
+    "Unauthorized Database Access",
+    "Multiple Failed Logins",
+    "Suspicious File Upload",
+    "Firewall Breach Detected",
+    "Privilege Escalation Attempt",
+    "Malware Signature Found",
+    "Unusual Network Traffic"
+  ];
+
+  // Gradient from white (0) to red (1)
+  function getWhiteToRed(severity) {
+    const r = 255; // always full red
+    const g = Math.floor(255 * (1 - severity));
+    const b = Math.floor(255 * (1 - severity));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  function addOffence() {
+    const item = document.createElement('div');
+    item.className = "item";
+
+    const text = offences[Math.floor(Math.random() * offences.length)];
+    const count = Math.floor(Math.random() * 50 + 1);
+    const severity = Math.random(); // simulate severity 0-1
+
+    item.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:5px; border-bottom:1px solid #ddd;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <!-- Count on the left -->
+          <div class="badge" style="background:#ff6b6b;color:#fff;">${count}</div>
+          <span style="font-weight:600;">${text}</span>
+        </div>
+        <!-- Severity line on the right -->
+        <div style="width:50px; height:5px; border-radius:2px; background:${getWhiteToRed(severity)};"></div>
+      </div>
+    `;
+
+    offenceList.prepend(item);
+
+    // Keep max 10 offences
+    if (offenceList.children.length > 10) {
+      offenceList.removeChild(offenceList.lastChild);
+    }
+  }
+
+  // Initialize
+  for (let i = 0; i < 3; i++) addOffence();
+
+  // Add new offence every 5 seconds
+  setInterval(addOffence, 5000);
+
+  window.addOffence = addOffence;
+})();
+</script>
+
+
+
+
+<footer>Images & UI inspired by SIEM dashboards • demo data only</footer>
+
+
+</body>
+</html>
+
